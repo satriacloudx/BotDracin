@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,6 +17,13 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Fix untuk Python 3.13
+if hasattr(asyncio, 'set_event_loop_policy'):
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except:
+        pass
 
 # Database struktur: channel_id untuk menyimpan video & thumbnail
 ADMIN_CHANNEL = os.environ.get('ADMIN_CHANNEL')  # Channel untuk database
@@ -322,21 +330,35 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Main function"""
-    # Buat aplikasi
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Register handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO,
-        handle_message
-    ))
-    application.add_error_handler(error_handler)
-    
-    # Jalankan bot
-    logger.info("Bot started...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Buat aplikasi dengan konfigurasi khusus untuk Python 3.13
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .connect_timeout(30)
+            .read_timeout(30)
+            .write_timeout(30)
+            .build()
+        )
+        
+        # Register handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO,
+            handle_message
+        ))
+        application.add_error_handler(error_handler)
+        
+        # Jalankan bot dengan polling
+        logger.info("Bot started...")
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
