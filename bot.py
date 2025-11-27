@@ -1,6 +1,8 @@
 import os
 import logging
 import asyncio
+from threading import Thread
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,12 +13,16 @@ from telegram.ext import (
     ContextTypes
 )
 
-# Setup logging
+# Setup logging - matikan log httpx
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Matikan log httpx dan telegram yang spam
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
 
 # Fix untuk Python 3.13
 if hasattr(asyncio, 'set_event_loop_policy'):
@@ -28,9 +34,34 @@ if hasattr(asyncio, 'set_event_loop_policy'):
 # Database struktur: channel_id untuk menyimpan video & thumbnail
 ADMIN_CHANNEL = os.environ.get('ADMIN_CHANNEL')  # Channel untuk database
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
+PORT = int(os.environ.get('PORT', 10000))
 
 # In-memory cache untuk film (akan diisi dari channel)
 drama_database = {}
+
+# Flask app untuk health check
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return {
+        'status': 'online',
+        'bot': 'Drama China Telegram Bot',
+        'drama_count': len(drama_database),
+        'message': 'Bot is running!'
+    }, 200
+
+@app.route('/health')
+def health():
+    return {'status': 'healthy'}, 200
+
+@app.route('/ping')
+def ping():
+    return {'ping': 'pong'}, 200
+
+def run_flask():
+    """Jalankan Flask server di thread terpisah"""
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler command /start"""
@@ -100,19 +131,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'upload':
         # Cek apakah user adalah admin
         user_id = query.from_user.id
-        chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL, user_id)
-        
-        if chat_member.status not in ['creator', 'administrator']:
-            await query.edit_message_text("❌ Hanya admin yang dapat mengupload drama.")
-            return
-        
-        await query.edit_message_text(
-            "📤 *Cara Upload Drama:*\n\n"
-            "1. Kirim thumbnail drama\n"
-            "2. Kirim video episode dengan caption format:\n"
-            "   `#drama_id Judul Drama - Episode X`\n\n"
-            "Contoh: `#LOO Love O2O - Episode 1`"
-        )
+        try:
+            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL, user_id)
+            
+            if chat_member.status not in ['creator', 'administrator']:
+                await query.edit_message_text("❌ Hanya admin yang dapat mengupload drama.")
+                return
+            
+            await query.edit_message_text(
+                "📤 *Cara Upload Drama:*\n\n"
+                "1. Kirim thumbnail drama\n"
+                "2. Kirim video episode dengan caption format:\n"
+                "   `#drama_id Judul Drama - Episode X`\n\n"
+                "Contoh: `#LOO Love O2O - Episode 1`",
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            logger.error(f"Error checking admin: {e}")
+            await query.edit_message_text("❌ Error: Pastikan bot sudah admin di channel.")
         
     elif query.data.startswith('drama_'):
         drama_id = query.data.replace('drama_', '')
@@ -267,7 +303,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     "✅ Thumbnail tersimpan!\n\n"
                     "Sekarang kirim video dengan format caption:\n"
-                    "`#drama_id Judul Drama - Episode X`"
+                    "`#drama_id Judul Drama - Episode X`",
+                    parse_mode='Markdown'
                 )
         except:
             pass
@@ -331,6 +368,11 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Main function"""
     try:
+        # Start Flask server di thread terpisah
+        logger.info(f"Starting HTTP server on port {PORT}...")
+        flask_thread = Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
         # Buat aplikasi dengan konfigurasi khusus untuk Python 3.13
         application = (
             Application.builder()
@@ -351,7 +393,7 @@ def main():
         application.add_error_handler(error_handler)
         
         # Jalankan bot dengan polling
-        logger.info("Bot started...")
+        logger.info("Bot started successfully!")
         application.run_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True
