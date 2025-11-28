@@ -41,7 +41,6 @@ if ADMIN_IDS:
             ADMIN_USER_IDS.add(int(uid.strip()))
         except ValueError:
             pass
-    logger.info(f"Admin users: {ADMIN_USER_IDS}")
 
 # Parse database channel
 DATABASE_CHANNEL_ID = None
@@ -51,9 +50,9 @@ if DATABASE_CHANNEL:
         DATABASE_CHANNEL_ID = int(clean)
         logger.info(f"Database channel: {DATABASE_CHANNEL_ID}")
     except ValueError:
-        logger.warning(f"DATABASE_CHANNEL format salah: {DATABASE_CHANNEL}")
+        logger.warning(f"DATABASE_CHANNEL format salah")
 
-# Database - akan di-load dari channel
+# Database
 drama_database = {}
 
 # Flask app
@@ -84,70 +83,6 @@ def is_admin(user_id: int) -> bool:
         return user_id in ADMIN_USER_IDS
     return True
 
-async def load_database_from_channel(bot):
-    """Load semua drama dari channel"""
-    global drama_database
-    
-    if not DATABASE_CHANNEL_ID:
-        logger.warning("DATABASE_CHANNEL tidak diset")
-        return
-    
-    try:
-        drama_database = {}
-        message_count = 0
-        
-        # Scan semua message di channel
-        async for message in bot.get_chat_history(DATABASE_CHANNEL_ID, limit=1000):
-            message_count += 1
-            
-            # Skip jika bukan video
-            if not message.video:
-                continue
-            
-            # Parse caption: #drama_id Judul Drama - Episode X
-            if not message.caption or not message.caption.startswith('#'):
-                continue
-            
-            try:
-                caption = message.caption
-                parts = caption.split(' ', 1)
-                drama_id = parts[0][1:]  # Hilangkan #
-                
-                if len(parts) < 2 or ' - Episode ' not in parts[1]:
-                    continue
-                
-                title_ep = parts[1].split(' - Episode ')
-                drama_title = title_ep[0].strip()
-                episode_num = title_ep[1].strip()
-                
-                # Simpan ke database
-                if drama_id not in drama_database:
-                    drama_database[drama_id] = {
-                        'title': drama_title,
-                        'episodes': {}
-                    }
-                
-                drama_database[drama_id]['episodes'][episode_num] = {
-                    'file_id': message.video.file_id,
-                    'message_id': message.message_id
-                }
-                
-                # Cek thumbnail dari message sebelumnya
-                # (jika ada foto sebelum video dengan caption yang sama drama_id)
-                
-            except Exception as e:
-                logger.error(f"Error parsing message: {e}")
-                continue
-        
-        logger.info(f"Database loaded: {len(drama_database)} drama from {message_count} messages")
-        
-        # Log detail
-        for drama_id, info in drama_database.items():
-            logger.info(f"  - {info['title']}: {len(info['episodes'])} episodes")
-        
-    except Exception as e:
-        logger.error(f"Error loading database: {e}")
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔍 Cari Drama", callback_data='search')],
@@ -162,29 +97,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Cari drama favorit\n"
         "• Tonton langsung di Telegram\n"
         "• Pilih episode\n\n"
-        "Database tersimpan di channel Telegram!\n\n"
+        "📦 Database tersimpan di channel!\n\n"
         "Silakan pilih menu:"
     )
     
     await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reload database dari channel"""
-    if not is_admin(update.message.from_user.id):
-        await update.message.reply_text("❌ Hanya admin yang bisa reload database")
-        return
-    
-    msg = await update.message.reply_text("🔄 Memuat ulang database dari channel...")
-    
-    await load_database_from_channel(context.bot)
-    
-    total_ep = sum(len(d['episodes']) for d in drama_database.values())
-    
-    await msg.edit_text(
-        f"✅ Database berhasil dimuat!\n\n"
-        f"📊 Total Drama: {len(drama_database)}\n"
-        f"📺 Total Episode: {total_ep}"
-    )
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔧 *Status Bot*\n\n"
@@ -193,19 +110,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ADMIN_USER_IDS:
         text += f"✅ ADMIN_IDS: {len(ADMIN_USER_IDS)} admin\n"
     else:
-        text += "⚠️ ADMIN_IDS: Mode testing (semua bisa upload)\n"
+        text += "⚠️ ADMIN_IDS: Mode testing\n"
     
     if DATABASE_CHANNEL_ID:
         text += f"✅ DATABASE_CHANNEL: `{DATABASE_CHANNEL_ID}`\n"
-        
-        # Cek akses channel
         try:
             chat = await context.bot.get_chat(DATABASE_CHANNEL_ID)
-            text += f"✅ Channel Name: {chat.title}\n"
+            text += f"✅ Channel: {chat.title}\n"
         except Exception as e:
-            text += f"❌ Error akses channel: {str(e)[:50]}\n"
+            text += f"❌ Error: {str(e)[:50]}\n"
     else:
-        text += "❌ DATABASE_CHANNEL: Tidak diset!\n"
+        text += "⚠️ DATABASE_CHANNEL: Tidak diset\n"
     
     user_id = update.message.from_user.id
     if is_admin(user_id):
@@ -224,15 +139,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == 'search':
         await query.edit_message_text(
-            "🔍 Ketik nama drama yang ingin dicari:\n\nContoh: Love O2O"
+            "🔍 Ketik nama drama:\n\nContoh: Love O2O"
         )
         context.user_data['waiting_for'] = 'search'
         
     elif query.data == 'list':
         if not drama_database:
             await query.edit_message_text(
-                "📺 Belum ada drama tersedia.\n\n"
-                "Admin dapat upload ke channel database."
+                "📺 Belum ada drama.\n\n"
+                "Admin dapat upload drama."
             )
             return
         
@@ -251,41 +166,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data == 'upload':
         if not is_admin(query.from_user.id):
-            await query.edit_message_text("❌ Hanya admin yang bisa upload")
+            await query.edit_message_text("❌ Hanya admin")
             return
         
         if not DATABASE_CHANNEL_ID:
-            await query.edit_message_text(
-                "❌ DATABASE_CHANNEL belum diset!\n\n"
-                "Hubungi owner bot untuk setup."
-            )
+            await query.edit_message_text("❌ DATABASE_CHANNEL belum diset")
             return
         
-        # Get channel info
-        try:
-            chat = await context.bot.get_chat(DATABASE_CHANNEL_ID)
-            channel_link = f"@{chat.username}" if chat.username else "Channel Private"
-        except:
-            channel_link = "Channel"
-        
         await query.edit_message_text(
-            f"📤 *Cara Upload Drama:*\n\n"
-            f"1. Buka channel: {channel_link}\n"
-            f"   ID: `{DATABASE_CHANNEL_ID}`\n\n"
-            f"2. (Opsional) Kirim foto thumbnail dengan caption:\n"
-            f"   `#drama_id Nama Drama`\n\n"
-            f"3. Kirim video episode dengan caption:\n"
-            f"   `#drama_id Nama Drama - Episode X`\n\n"
-            f"*Contoh:*\n"
-            f"Thumbnail: `#LOO Love O2O`\n"
-            f"Episode: `#LOO Love O2O - Episode 1`\n\n"
-            f"4. Setelah upload, ketik /reload di bot untuk refresh database",
+            "📤 *Cara Upload:*\n\n"
+            "1. Kirim foto thumbnail dengan caption:\n"
+            "   `#drama_id Nama Drama`\n\n"
+            "2. Kirim video episode dengan caption:\n"
+            "   `#drama_id Nama Drama - Episode X`\n\n"
+            "*Contoh:*\n"
+            "Thumbnail: `#LOO Love O2O`\n"
+            "Episode 1: `#LOO Love O2O - Episode 1`\n"
+            "Episode 2: `#LOO Love O2O - Episode 2`\n\n"
+            "Bot akan otomatis simpan ke channel database!",
             parse_mode='Markdown'
         )
         
     elif query.data.startswith('drama_'):
         drama_id = query.data.replace('drama_', '')
-        await show_episodes(query, drama_id, context)
+        await show_episodes(query, drama_id)
         
     elif query.data.startswith('ep_'):
         parts = query.data.split('_')
@@ -302,7 +206,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-async def show_episodes(query, drama_id, context):
+async def show_episodes(query, drama_id):
     if drama_id not in drama_database:
         await query.edit_message_text("❌ Drama tidak ditemukan")
         return
@@ -310,7 +214,7 @@ async def show_episodes(query, drama_id, context):
     drama = drama_database[drama_id]
     episodes = drama['episodes']
     
-    text = f"🎬 *{drama['title']}*\n\n📊 Total: {len(episodes)} episode\n\nPilih episode:"
+    text = f"🎬 *{drama['title']}*\n\n📊 {len(episodes)} episode\n\nPilih:"
     
     keyboard = []
     row = []
@@ -324,7 +228,6 @@ async def show_episodes(query, drama_id, context):
     
     keyboard.append([InlineKeyboardButton("« Kembali", callback_data='list')])
     
-    # Cek apakah ada thumbnail di channel
     if 'thumbnail' in drama:
         await query.message.reply_photo(
             photo=drama['thumbnail'],
@@ -344,34 +247,24 @@ async def send_episode(query, drama_id, ep_num, context):
     drama = drama_database[drama_id]
     episode = drama['episodes'][ep_num]
     
-    # Forward video dari channel
-    try:
-        await context.bot.copy_message(
-            chat_id=query.message.chat_id,
-            from_chat_id=DATABASE_CHANNEL_ID,
-            message_id=episode['message_id']
-        )
-    except:
-        # Fallback: kirim ulang dengan file_id
-        await query.message.reply_video(
-            video=episode['file_id'],
-            caption=f"🎬 *{drama['title']}*\n📺 Episode {ep_num}",
-            parse_mode='Markdown'
-        )
+    await query.message.reply_video(
+        video=episode['file_id'],
+        caption=f"🎬 *{drama['title']}*\n📺 Episode {ep_num}",
+        parse_mode='Markdown'
+    )
     
-    # Keyboard next episode
     keyboard = []
     next_ep = str(int(ep_num) + 1)
     if next_ep in drama['episodes']:
         keyboard.append([
-            InlineKeyboardButton(f"▶️ Episode {next_ep}", callback_data=f"ep_{drama_id}_{next_ep}")
+            InlineKeyboardButton(f"▶️ EP {next_ep}", callback_data=f"ep_{drama_id}_{next_ep}")
         ])
     keyboard.append([
-        InlineKeyboardButton("📺 Daftar Episode", callback_data=f"drama_{drama_id}")
+        InlineKeyboardButton("📺 Episodes", callback_data=f"drama_{drama_id}")
     ])
     
     await query.message.reply_text(
-        "Pilih episode selanjutnya:",
+        "Selanjutnya:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -388,10 +281,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         
         if not results:
-            await update.message.reply_text(
-                f"❌ Drama '{update.message.text}' tidak ditemukan.\n\n"
-                "Coba kata kunci lain atau lihat daftar lengkap."
-            )
+            await update.message.reply_text(f"❌ '{update.message.text}' tidak ditemukan")
         else:
             keyboard = [
                 [InlineKeyboardButton(title, callback_data=f"drama_{did}")]
@@ -399,12 +289,111 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             keyboard.append([InlineKeyboardButton("« Kembali", callback_data='back')])
             await update.message.reply_text(
-                f"🔍 Hasil pencarian '{update.message.text}':",
+                f"🔍 Hasil '{update.message.text}':",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         
         user_data['waiting_for'] = None
         return
+    
+    # Upload thumbnail
+    if update.message.photo and is_admin(update.message.from_user.id):
+        if not update.message.caption or not update.message.caption.startswith('#'):
+            await update.message.reply_text("❌ Kirim foto dengan caption: `#drama_id Nama Drama`", parse_mode='Markdown')
+            return
+        
+        await process_thumbnail_upload(update, context)
+        return
+    
+    # Upload video
+    if update.message.video and update.message.caption and is_admin(update.message.from_user.id):
+        if not update.message.caption.startswith('#'):
+            await update.message.reply_text("❌ Format salah!")
+            return
+        
+        await process_video_upload(update, context)
+        return
+
+async def process_thumbnail_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Proses upload thumbnail"""
+    caption = update.message.caption
+    parts = caption.split(' ', 1)
+    drama_id = parts[0][1:]  # Hilangkan #
+    
+    if len(parts) < 2:
+        await update.message.reply_text("❌ Format: `#drama_id Nama Drama`", parse_mode='Markdown')
+        return
+    
+    drama_title = parts[1].strip()
+    photo = update.message.photo[-1]
+    
+    # Forward ke channel
+    if DATABASE_CHANNEL_ID:
+        try:
+            fwd_msg = await update.message.forward(DATABASE_CHANNEL_ID)
+            logger.info(f"Thumbnail forwarded to channel (msg_id: {fwd_msg.message_id})")
+        except Exception as e:
+            logger.error(f"Error forwarding thumbnail: {e}")
+    
+    # Simpan ke database
+    if drama_id not in drama_database:
+        drama_database[drama_id] = {'title': drama_title, 'episodes': {}}
+    
+    drama_database[drama_id]['title'] = drama_title
+    drama_database[drama_id]['thumbnail'] = photo.file_id
+    
+    await update.message.reply_text(
+        f"✅ Thumbnail tersimpan!\n"
+        f"🎬 {drama_title}\n\n"
+        f"Sekarang kirim video episode dengan caption:\n"
+        f"`#drama_id Nama Drama - Episode X`",
+        parse_mode='Markdown'
+    )
+
+async def process_video_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Proses upload video episode"""
+    caption = update.message.caption
+    
+    if ' - Episode ' not in caption:
+        await update.message.reply_text("❌ Format: `#drama_id Nama - Episode X`", parse_mode='Markdown')
+        return
+    
+    parts = caption.split(' ', 1)
+    drama_id = parts[0][1:]
+    
+    title_ep = parts[1].split(' - Episode ')
+    drama_title = title_ep[0].strip()
+    ep_num = title_ep[1].strip()
+    
+    # Forward ke channel database
+    channel_msg_id = None
+    if DATABASE_CHANNEL_ID:
+        try:
+            fwd_msg = await update.message.forward(DATABASE_CHANNEL_ID)
+            channel_msg_id = fwd_msg.message_id
+            logger.info(f"Video forwarded to channel (msg_id: {channel_msg_id})")
+        except Exception as e:
+            logger.error(f"Error forwarding video: {e}")
+    
+    # Simpan ke database
+    if drama_id not in drama_database:
+        drama_database[drama_id] = {'title': drama_title, 'episodes': {}}
+    
+    drama_database[drama_id]['title'] = drama_title
+    drama_database[drama_id]['episodes'][ep_num] = {
+        'file_id': update.message.video.file_id,
+        'channel_msg_id': channel_msg_id
+    }
+    
+    total_eps = len(drama_database[drama_id]['episodes'])
+    
+    await update.message.reply_text(
+        f"✅ Berhasil!\n\n"
+        f"🎬 {drama_title}\n"
+        f"📺 Episode {ep_num}\n"
+        f"📊 Total: {total_eps} episode\n\n"
+        f"💾 Tersimpan di channel database!"
+    )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {context.error}")
@@ -418,25 +407,20 @@ def main():
         # Bot
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Load database dari channel saat startup
-        logger.info("Loading database from channel...")
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(load_database_from_channel(application.bot))
-        
         # Handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("status", status))
-        application.add_handler(CommandHandler("reload", reload))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO,
             handle_message
         ))
         application.add_error_handler(error_handler)
         
         logger.info("Bot started successfully!")
+        logger.info(f"Admin IDs: {ADMIN_USER_IDS}")
+        logger.info(f"Database Channel: {DATABASE_CHANNEL_ID}")
+        
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
         
     except Exception as e:
