@@ -32,7 +32,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 ADMIN_IDS = os.environ.get('ADMIN_IDS', '').strip()
 DATABASE_CHANNEL = os.environ.get('DATABASE_CHANNEL', '').strip()
 PORT = int(os.environ.get('PORT', 10000))
-QRIS_FILE_ID = os.environ.get('QRIS_FILE_ID', '').strip()  # File ID foto QRIS
+QRIS_URL = os.environ.get('QRIS_URL', '').strip()  # URL foto QRIS
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN tidak boleh kosong!")
@@ -161,12 +161,13 @@ async def index_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("❌ Pesan bukan dari database channel.")
         return
 
-    success = await parse_and_index_message(msg, context)
+    result = await parse_and_index_message(msg, context)
 
-    if success:
-        await msg.reply_text("✅ Berhasil diindex.")
+    if result:
+        # result berisi info detail tentang apa yang diindex
+        await msg.reply_text(result)
     else:
-        await msg.reply_text("❌ Format caption salah.")
+        await msg.reply_text("❌ *Format Caption Salah*\n\n━━━━━━━━━━━━━━━━━━━━\nPastikan format sesuai:\n\n📸 Thumbnail: `#ID JudulDrama`\n🎥 Episode: `#ID JudulDrama - Episode X`", parse_mode='Markdown')
 
 
 async def parse_and_index_message(message, context):
@@ -187,15 +188,51 @@ async def parse_and_index_message(message, context):
             title = title_ep[0].strip()
             ep = title_ep[1].strip()
 
-            if drama_id not in drama_database:
+            # Check if drama exists
+            is_new_drama = drama_id not in drama_database
+            
+            if is_new_drama:
                 drama_database[drama_id] = {"title": title, "episodes": {}}
 
+            # Check if episode already exists
+            is_update = ep in drama_database[drama_id]["episodes"]
+            
             drama_database[drama_id]["episodes"][ep] = {
                 "file_id": message.video.file_id
             }
 
+            # Get video info
+            video = message.video
+            duration = f"{video.duration // 60}:{video.duration % 60:02d}" if video.duration else "N/A"
+            file_size = f"{video.file_size / (1024*1024):.2f} MB" if video.file_size else "N/A"
+            
+            total_eps = len(drama_database[drama_id]["episodes"])
+            
             logger.info(f"Indexed: {drama_id} - {title} EP {ep}")
-            return True
+            
+            # Detailed response
+            response = (
+                f"✅ *Berhasil Diindex!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📹 *Tipe:* Episode Video\n"
+                f"🎬 *Drama:* {title}\n"
+                f"🆔 *ID:* #{drama_id}\n"
+                f"📺 *Episode:* {ep}\n"
+                f"⏱ *Durasi:* {duration}\n"
+                f"💾 *Ukuran:* {file_size}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            
+            if is_new_drama:
+                response += f"🆕 Drama baru ditambahkan!\n"
+            elif is_update:
+                response += f"🔄 Episode diperbarui!\n"
+            else:
+                response += f"➕ Episode baru ditambahkan!\n"
+                
+            response += f"📊 Total episode sekarang: *{total_eps} EP*"
+            
+            return response
 
         # PHOTO (THUMBNAIL)
         if message.photo:
@@ -206,14 +243,47 @@ async def parse_and_index_message(message, context):
             drama_id = parts[0][1:]
             title = parts[1].strip() if len(parts) > 1 else "Unknown"
 
-            if drama_id not in drama_database:
+            # Check if drama exists
+            is_new_drama = drama_id not in drama_database
+            has_old_thumbnail = not is_new_drama and "thumbnail" in drama_database[drama_id]
+            
+            if is_new_drama:
                 drama_database[drama_id] = {"title": title, "episodes": {}}
 
             drama_database[drama_id]["thumbnail"] = message.photo[-1].file_id
             drama_database[drama_id]["title"] = title
 
+            # Get photo info
+            photo = message.photo[-1]
+            resolution = f"{photo.width}x{photo.height}"
+            file_size = f"{photo.file_size / 1024:.2f} KB" if photo.file_size else "N/A"
+            
+            total_eps = len(drama_database[drama_id].get("episodes", {}))
+            
             logger.info(f"Indexed thumbnail: {drama_id} - {title}")
-            return True
+            
+            # Detailed response
+            response = (
+                f"✅ *Berhasil Diindex!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🖼 *Tipe:* Thumbnail Drama\n"
+                f"🎬 *Drama:* {title}\n"
+                f"🆔 *ID:* #{drama_id}\n"
+                f"📐 *Resolusi:* {resolution}\n"
+                f"💾 *Ukuran:* {file_size}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            
+            if is_new_drama:
+                response += f"🆕 Drama baru dibuat!\n"
+            elif has_old_thumbnail:
+                response += f"🔄 Thumbnail diperbarui!\n"
+            else:
+                response += f"➕ Thumbnail ditambahkan!\n"
+                
+            response += f"📊 Total episode: *{total_eps} EP*"
+            
+            return response
 
         return False
 
@@ -283,10 +353,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data="back")]])
         
-        if QRIS_FILE_ID:
+        if QRIS_URL:
             try:
                 await query.message.reply_photo(
-                    photo=QRIS_FILE_ID,
+                    photo=QRIS_URL,
                     caption=support_text,
                     reply_markup=kb,
                     parse_mode='Markdown'
