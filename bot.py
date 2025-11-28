@@ -32,9 +32,22 @@ if hasattr(asyncio, 'set_event_loop_policy'):
         pass
 
 # Database struktur: channel_id untuk menyimpan video & thumbnail
-ADMIN_CHANNEL = os.environ.get('ADMIN_CHANNEL')  # Channel untuk database
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+ADMIN_CHANNEL = os.environ.get('ADMIN_CHANNEL', '').strip()
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 PORT = int(os.environ.get('PORT', 10000))
+
+# Validasi environment variables
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN tidak boleh kosong!")
+
+# Konversi ADMIN_CHANNEL ke integer jika ada
+ADMIN_CHANNEL_ID = None
+if ADMIN_CHANNEL:
+    try:
+        ADMIN_CHANNEL_ID = int(ADMIN_CHANNEL)
+        logger.info(f"Admin channel ID: {ADMIN_CHANNEL_ID}")
+    except ValueError:
+        logger.warning(f"ADMIN_CHANNEL format salah: {ADMIN_CHANNEL}")
 
 # In-memory cache untuk film (akan diisi dari channel)
 drama_database = {}
@@ -87,6 +100,71 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler command /status - cek konfigurasi bot"""
+    status_text = "🔧 *Status Bot*\n\n"
+    
+    # Cek BOT_TOKEN
+    if BOT_TOKEN:
+        status_text += "✅ BOT_TOKEN: OK\n"
+    else:
+        status_text += "❌ BOT_TOKEN: KOSONG\n"
+    
+    # Cek ADMIN_CHANNEL
+    if ADMIN_CHANNEL_ID:
+        status_text += f"✅ ADMIN_CHANNEL: `{ADMIN_CHANNEL_ID}`\n"
+        
+        # Test akses ke channel
+        try:
+            chat = await context.bot.get_chat(ADMIN_CHANNEL_ID)
+            status_text += f"✅ Channel: {chat.title}\n"
+            
+            # Cek bot admin atau tidak
+            bot_member = await context.bot.get_chat_member(ADMIN_CHANNEL_ID, context.bot.id)
+            if bot_member.status == 'administrator':
+                status_text += "✅ Bot adalah admin di channel\n"
+            else:
+                status_text += f"⚠️ Bot bukan admin (status: {bot_member.status})\n"
+                
+        except Exception as e:
+            status_text += f"❌ Error akses channel: {str(e)}\n"
+    else:
+        status_text += "❌ ADMIN_CHANNEL: TIDAK DISET\n"
+    
+    # Cek user admin atau tidak
+    if ADMIN_CHANNEL_ID:
+        try:
+            user_member = await context.bot.get_chat_member(ADMIN_CHANNEL_ID, update.message.from_user.id)
+            if user_member.status in ['creator', 'administrator']:
+                status_text += f"✅ Anda adalah admin\n"
+            else:
+                status_text += f"⚠️ Anda bukan admin (status: {user_member.status})\n"
+        except Exception as e:
+            status_text += f"❌ Error cek status user: {str(e)}\n"
+    
+    # Drama count
+    status_text += f"\n📊 Total Drama: {len(drama_database)}\n"
+    
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler command /debug - info untuk troubleshooting"""
+    debug_text = "🐛 *Debug Info*\n\n"
+    debug_text += f"Your User ID: `{update.message.from_user.id}`\n"
+    debug_text += f"Your Username: @{update.message.from_user.username or 'N/A'}\n\n"
+    
+    debug_text += f"ADMIN_CHANNEL raw: `{ADMIN_CHANNEL}`\n"
+    debug_text += f"ADMIN_CHANNEL_ID: `{ADMIN_CHANNEL_ID}`\n\n"
+    
+    debug_text += "*Format yang benar:*\n"
+    debug_text += "`-1001234567890`\n\n"
+    debug_text += "Pastikan:\n"
+    debug_text += "• Ada tanda minus di depan\n"
+    debug_text += "• Diawali -100\n"
+    debug_text += "• Total 13-14 digit\n"
+    
+    await update.message.reply_text(debug_text, parse_mode='Markdown')
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk inline keyboard"""
     query = update.callback_query
@@ -129,10 +207,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
     elif query.data == 'upload':
+        # Cek apakah admin channel sudah diset
+        if not ADMIN_CHANNEL_ID:
+            await query.edit_message_text(
+                "❌ Admin channel belum dikonfigurasi.\n\n"
+                "Hubungi owner bot untuk setup ADMIN_CHANNEL."
+            )
+            return
+        
         # Cek apakah user adalah admin
         user_id = query.from_user.id
         try:
-            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL, user_id)
+            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL_ID, user_id)
             
             if chat_member.status not in ['creator', 'administrator']:
                 await query.edit_message_text("❌ Hanya admin yang dapat mengupload drama.")
@@ -148,7 +234,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.error(f"Error checking admin: {e}")
-            await query.edit_message_text("❌ Error: Pastikan bot sudah admin di channel.")
+            await query.edit_message_text(
+                f"❌ Error saat cek admin status.\n\n"
+                f"Pastikan:\n"
+                f"• Bot sudah admin di channel\n"
+                f"• ADMIN_CHANNEL format benar: `-100xxxxxxxxxx`\n"
+                f"• Anda sudah admin di channel tersebut"
+            )
         
     elif query.data.startswith('drama_'):
         drama_id = query.data.replace('drama_', '')
@@ -294,9 +386,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Handle upload thumbnail (untuk admin)
     if update.message.photo:
+        if not ADMIN_CHANNEL_ID:
+            return
+            
         user_id = update.message.from_user.id
         try:
-            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL, user_id)
+            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL_ID, user_id)
             if chat_member.status in ['creator', 'administrator']:
                 photo = update.message.photo[-1]
                 user_data['thumbnail_file_id'] = photo.file_id
@@ -306,18 +401,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "`#drama_id Judul Drama - Episode X`",
                     parse_mode='Markdown'
                 )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error upload thumbnail: {e}")
     
     # Handle upload video episode (untuk admin)
     if update.message.video and update.message.caption:
+        if not ADMIN_CHANNEL_ID:
+            return
+            
         user_id = update.message.from_user.id
         try:
-            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL, user_id)
+            chat_member = await context.bot.get_chat_member(ADMIN_CHANNEL_ID, user_id)
             if chat_member.status in ['creator', 'administrator']:
                 await process_video_upload(update, context)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error upload video: {e}")
 
 async def process_video_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Proses upload video episode"""
@@ -385,6 +483,8 @@ def main():
         
         # Register handlers
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("debug", debug))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND | filters.PHOTO | filters.VIDEO,
