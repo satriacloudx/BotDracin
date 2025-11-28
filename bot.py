@@ -113,7 +113,7 @@ def build_start_keyboard(is_admin_user: bool):
     keyboard = [
         [InlineKeyboardButton("🔍 Cari Drama", callback_data='search')],
         [InlineKeyboardButton("📺 Daftar Drama", callback_data='list')],
-        [InlineKeyboardButton("💝 Support Developer", callback_data='support')],
+        [InlineKeyboardButton("Support Developer", callback_data='support')],
     ]
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data='admin_panel')])
