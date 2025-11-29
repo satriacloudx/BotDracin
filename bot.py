@@ -113,7 +113,7 @@ def build_start_keyboard(is_admin_user: bool):
     keyboard = [
         [InlineKeyboardButton("🔍 Cari Drama", callback_data='search')],
         [InlineKeyboardButton("📺 Daftar Drama", callback_data='list')],
-        [InlineKeyboardButton("Support Developer", callback_data='support')],
+        [InlineKeyboardButton("💝 Support Developer", callback_data='support')],
     ]
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data='admin_panel')])
@@ -153,11 +153,14 @@ async def index_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     origin = msg.forward_origin
 
-    if not origin or not origin.chat:
+    if not origin:
         await msg.reply_text("❌ Ini bukan pesan forward channel.")
         return
 
-    if DATABASE_CHANNEL_ID and origin.chat.id != DATABASE_CHANNEL_ID:
+    # Check if origin has chat attribute (for channel forwards)
+    origin_chat = getattr(origin, 'chat', None)
+    
+    if DATABASE_CHANNEL_ID and origin_chat and origin_chat.id != DATABASE_CHANNEL_ID:
         await msg.reply_text("❌ Pesan bukan dari database channel.")
         return
 
@@ -165,7 +168,7 @@ async def index_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if result:
         # result berisi info detail tentang apa yang diindex
-        await msg.reply_text(result)
+        await msg.reply_text(result, parse_mode='Markdown')
     else:
         await msg.reply_text("❌ *Format Caption Salah*\n\n━━━━━━━━━━━━━━━━━━━━\nPastikan format sesuai:\n\n📸 Thumbnail: `#ID JudulDrama`\n🎥 Episode: `#ID JudulDrama - Episode X`", parse_mode='Markdown')
 
@@ -672,9 +675,13 @@ async def send_episode(query, did, ep, context):
 # =====================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    
+    # Check if message exists
+    if not msg:
+        return
 
     # FORWARD → INDEX
-    if msg.forward_origin and msg.forward_origin.chat:
+    if msg.forward_origin:
         await index_message(update, context)
         return
 
