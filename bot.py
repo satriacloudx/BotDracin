@@ -113,7 +113,7 @@ def build_start_keyboard(is_admin_user: bool):
     keyboard = [
         [InlineKeyboardButton("🔍 Cari Drama", callback_data='search')],
         [InlineKeyboardButton("📺 Daftar Drama", callback_data='list')],
-        [InlineKeyboardButton("💝 Support Developer", callback_data='support')],
+        [InlineKeyboardButton("Support Developer", callback_data='support')],
     ]
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data='admin_panel')])
@@ -124,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = build_start_keyboard(is_admin(user_id))
     
     welcome_text = (
-        "🎬 *Selamat Datang di Bot Drama Cina!*\n\n"
+        "🎬 *Selamat Datang di DSeriesHub!*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Bot ini menyediakan koleksi drama Cina lengkap yang bisa kamu tonton kapan saja!\n\n"
         f"📊 *Total Drama:* {len(drama_database)}\n"
@@ -319,7 +319,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "back":
         kb = build_start_keyboard(is_admin(user_id))
         welcome_text = (
-            "🎬 *Bot Drama Cina*\n\n"
+            "🎬 *Bot DSeriesHub*\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 Total Drama: {len(drama_database)}\n"
             f"🎥 Total Episode: {sum(len(d.get('episodes', {})) for d in drama_database.values())}\n\n"
