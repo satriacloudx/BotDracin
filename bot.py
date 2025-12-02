@@ -54,7 +54,7 @@ def is_admin(user_id: int) -> bool:
 # =====================================
 # API DRAMABOX
 # =====================================
-API_BASE = "https://sapi.dramabox.be"
+API_BASE = "https://sapi.dramabox.be/api"
 DEFAULT_LANG = "in"
 
 def api_search(keyword: str, lang: str = DEFAULT_LANG):
@@ -62,9 +62,17 @@ def api_search(keyword: str, lang: str = DEFAULT_LANG):
     try:
         url = f"{API_BASE}/suggest/{keyword}"
         params = {"lang": lang}
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logger.info(f"API search response: {data}")
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API search request error: {e}")
+        return None
     except Exception as e:
         logger.error(f"API search error: {e}")
         return None
@@ -74,9 +82,17 @@ def api_get_drama(drama_id: str, lang: str = DEFAULT_LANG):
     try:
         url = f"{API_BASE}/watch/{drama_id}/0"
         params = {"lang": lang, "source": "search_result"}
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logger.info(f"API get drama response keys: {data.keys() if isinstance(data, dict) else type(data)}")
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API get drama request error: {e}")
+        return None
     except Exception as e:
         logger.error(f"API get drama error: {e}")
         return None
@@ -86,9 +102,17 @@ def api_get_episodes(drama_id: str, lang: str = DEFAULT_LANG):
     try:
         url = f"{API_BASE}/chapters/{drama_id}"
         params = {"lang": lang}
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logger.info(f"API get episodes response keys: {data.keys() if isinstance(data, dict) else type(data)}")
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API get episodes request error: {e}")
+        return None
     except Exception as e:
         logger.error(f"API get episodes error: {e}")
         return None
@@ -98,9 +122,17 @@ def api_get_video(drama_id: str, episode: int, lang: str = DEFAULT_LANG):
     try:
         url = f"{API_BASE}/watch/{drama_id}/{episode}"
         params = {"lang": lang, "source": "search_result"}
-        response = requests.get(url, params=params, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        logger.info(f"API get video response keys: {data.keys() if isinstance(data, dict) else type(data)}")
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"API get video request error: {e}")
+        return None
     except Exception as e:
         logger.error(f"API get video error: {e}")
         return None
@@ -488,52 +520,115 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("❌ Masukkan kata kunci pencarian.")
             return
         
-        # Search using API
-        search_results = api_search(keyword)
-        
-        if not search_results or not search_results.get('data'):
-            await msg.reply_text(
-                f"❌ *Tidak Ditemukan*\n\n"
+        try:
+            # Search using API
+            search_results = api_search(keyword)
+            
+            # Debug log
+            logger.info(f"API Response: {search_results}")
+            
+            if not search_results:
+                await msg.reply_text(
+                    f"❌ *Gagal Terhubung ke Server*\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Tidak dapat mengakses API.\n\n"
+                    f"Coba lagi nanti!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
+                        [InlineKeyboardButton("« Kembali", callback_data="back")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+                context.user_data["waiting"] = None
+                return
+            
+            # Parse results - handle different response structures
+            results = []
+            if isinstance(search_results, dict):
+                # Try different possible keys
+                data = search_results.get('data', search_results.get('results', search_results.get('items', [])))
+                
+                # If data is a dict, try to get list from it
+                if isinstance(data, dict):
+                    data = data.get('list', data.get('items', data.get('dramas', [])))
+                
+                if isinstance(data, list):
+                    results = data[:10]  # Limit to 10
+            elif isinstance(search_results, list):
+                results = search_results[:10]
+            
+            if not results:
+                await msg.reply_text(
+                    f"❌ *Tidak Ditemukan*\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Drama dengan kata kunci *\"{keyword}\"* tidak ditemukan.\n\n"
+                    f"Coba kata kunci lain!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
+                        [InlineKeyboardButton("« Kembali", callback_data="back")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+                context.user_data["waiting"] = None
+                return
+            
+            # Build keyboard from results
+            keyboard = []
+            for item in results:
+                if isinstance(item, dict):
+                    drama_id = item.get('id', item.get('drama_id', item.get('album_id', '')))
+                    title = item.get('title', item.get('name', 'Unknown'))
+                    
+                    if drama_id:
+                        keyboard.append([InlineKeyboardButton(
+                            f"🎬 {title}",
+                            callback_data=f"d_{drama_id}"
+                        )])
+            
+            if not keyboard:
+                await msg.reply_text(
+                    f"❌ *Tidak Ada Hasil Valid*\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Tidak dapat memproses hasil pencarian.\n\n"
+                    f"Coba kata kunci lain!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
+                        [InlineKeyboardButton("« Kembali", callback_data="back")]
+                    ]),
+                    parse_mode='Markdown'
+                )
+                context.user_data["waiting"] = None
+                return
+            
+            keyboard.append([InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")])
+            keyboard.append([InlineKeyboardButton("« Kembali", callback_data="back")])
+            
+            result_text = (
+                f"🔍 *Hasil Pencarian*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Drama dengan kata kunci *\"{keyword}\"* tidak ditemukan.\n\n"
-                f"Coba kata kunci lain!",
+                f"Ditemukan {len(keyboard)-2} drama untuk *\"{keyword}\"*\n\n"
+                f"Pilih drama:"
+            )
+            
+            await msg.reply_text(
+                result_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+            await msg.reply_text(
+                f"❌ *Terjadi Kesalahan*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Error: {str(e)}\n\n"
+                f"Coba lagi nanti!",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
                     [InlineKeyboardButton("« Kembali", callback_data="back")]
                 ]),
                 parse_mode='Markdown'
             )
-            context.user_data["waiting"] = None
-            return
-        
-        # Parse results
-        results = search_results.get('data', [])[:10]  # Limit to 10
-        
-        keyboard = []
-        for item in results:
-            drama_id = item.get('id', '')
-            title = item.get('title', 'Unknown')
-            if drama_id:
-                keyboard.append([InlineKeyboardButton(
-                    f"🎬 {title}",
-                    callback_data=f"d_{drama_id}"
-                )])
-        
-        keyboard.append([InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")])
-        keyboard.append([InlineKeyboardButton("« Kembali", callback_data="back")])
-        
-        result_text = (
-            f"🔍 *Hasil Pencarian*\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Ditemukan {len(results)} drama untuk *\"{keyword}\"*\n\n"
-            f"Pilih drama:"
-        )
-        
-        await msg.reply_text(
-            result_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
         
         context.user_data["waiting"] = None
         return
