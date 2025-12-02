@@ -1,6 +1,5 @@
 import os
 import logging
-import requests
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -31,8 +30,9 @@ logging.getLogger('telegram').setLevel(logging.WARNING)
 # =====================================
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '').strip()
 ADMIN_IDS = os.environ.get('ADMIN_IDS', '').strip()
+DATABASE_CHANNEL = os.environ.get('DATABASE_CHANNEL', '').strip()
 PORT = int(os.environ.get('PORT', 10000))
-QRIS_URL = os.environ.get('QRIS_URL', '').strip()
+QRIS_URL = os.environ.get('QRIS_URL', '').strip()  # URL foto QRIS
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN tidak boleh kosong!")
@@ -51,91 +51,17 @@ def is_admin(user_id: int) -> bool:
         return user_id in ADMIN_USER_IDS
     return False
 
-# =====================================
-# API DRAMABOX
-# =====================================
-API_BASE = "https://sapi.dramabox.be/api"
-DEFAULT_LANG = "in"
-
-def api_search(keyword: str, lang: str = DEFAULT_LANG):
-    """Mencari drama berdasarkan kata kunci"""
+# CHANNEL DB
+DATABASE_CHANNEL_ID = None
+if DATABASE_CHANNEL:
     try:
-        url = f"{API_BASE}/suggest/{keyword}"
-        params = {"lang": lang}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"API search response: {data}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API search request error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"API search error: {e}")
-        return None
+        clean = DATABASE_CHANNEL.replace(" ", '').replace('"', '').replace("'", '')
+        DATABASE_CHANNEL_ID = int(clean)
+    except:
+        logger.warning("DATABASE_CHANNEL format salah")
 
-def api_get_drama(drama_id: str, lang: str = DEFAULT_LANG):
-    """Mendapatkan detail drama"""
-    try:
-        url = f"{API_BASE}/watch/{drama_id}/0"
-        params = {"lang": lang, "source": "search_result"}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"API get drama response keys: {data.keys() if isinstance(data, dict) else type(data)}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API get drama request error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"API get drama error: {e}")
-        return None
-
-def api_get_episodes(drama_id: str, lang: str = DEFAULT_LANG):
-    """Mendapatkan daftar episode drama"""
-    try:
-        url = f"{API_BASE}/chapters/{drama_id}"
-        params = {"lang": lang}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"API get episodes response keys: {data.keys() if isinstance(data, dict) else type(data)}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API get episodes request error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"API get episodes error: {e}")
-        return None
-
-def api_get_video(drama_id: str, episode: int, lang: str = DEFAULT_LANG):
-    """Mendapatkan video episode"""
-    try:
-        url = f"{API_BASE}/watch/{drama_id}/{episode}"
-        params = {"lang": lang, "source": "search_result"}
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"API get video response keys: {data.keys() if isinstance(data, dict) else type(data)}")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API get video request error: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"API get video error: {e}")
-        return None
+# MEMORY DB
+drama_database = {}
 
 # =====================================
 # FLASK SERVER
@@ -146,48 +72,48 @@ app = Flask(__name__)
 def home():
     return {
         'status': 'online',
-        'service': 'Dramabox Telegram Bot'
+        'dramas': len(drama_database)
     }
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
+
 # =====================================
-# HELPERS
+# HELPERS: SAFE EDIT / REPLY
 # =====================================
 async def safe_edit_or_reply(query, text, reply_markup=None, parse_mode=None):
-    """Edit message atau reply jika gagal"""
+    """
+    Try to edit the message text. If the original message is media (no text),
+    fallback to sending a new text message and try to delete the old message.
+    """
     try:
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
         return
     except BadRequest as e:
-        logger.debug(f"edit_message_text failed: {e}")
+        logger.debug(f"edit_message_text failed: {e}; will fallback to reply_text")
     except Exception as e:
-        logger.debug(f"edit_message_text exception: {e}")
+        logger.debug(f"edit_message_text exception: {e}; fallback to reply_text")
 
     try:
         await query.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception as e:
-        logger.error(f"Failed to reply: {e}")
+        logger.error(f"Failed to reply with fallback message: {e}")
 
     try:
         await query.message.delete()
     except Exception:
         pass
 
-def paginate_items(items, page, items_per_page=10):
-    """Helper untuk pagination"""
-    start = page * items_per_page
-    end = start + items_per_page
-    return items[start:end], len(items)
 
 # =====================================
-# START MENU
+# START MENU (AUTO ADMIN FILTER)
 # =====================================
 def build_start_keyboard(is_admin_user: bool):
     keyboard = [
         [InlineKeyboardButton("🔍 Cari Drama", callback_data='search')],
-        [InlineKeyboardButton("💝 Support Developer", callback_data='support')],
+        [InlineKeyboardButton("📺 Daftar Drama", callback_data='list')],
+        [InlineKeyboardButton("Support Developer", callback_data='support')],
     ]
     if is_admin_user:
         keyboard.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data='admin_panel')])
@@ -198,14 +124,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = build_start_keyboard(is_admin(user_id))
     
     welcome_text = (
-        "🎬 *Selamat Datang di DramaBox Bot!*\n\n"
+        "🎬 *Selamat Datang di DSeriesHub!*\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Bot ini menyediakan akses ke ribuan drama dari DramaBox yang bisa kamu tonton kapan saja!\n\n"
-        "🌟 Fitur:\n"
-        "• Pencarian drama otomatis\n"
-        "• Saran pencarian real-time\n"
-        "• Streaming video langsung\n"
-        "• Update konten terbaru\n\n"
+        "Bot ini menyediakan koleksi drama Cina lengkap yang bisa kamu tonton kapan saja!\n\n"
+        f"📊 *Total Drama:* {len(drama_database)}\n"
+        f"🎥 *Total Episode:* {sum(len(d.get('episodes', {})) for d in drama_database.values())}\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "Pilih menu di bawah untuk mulai:"
     )
@@ -216,6 +139,172 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='Markdown'
     )
 
+
+# =====================================
+# INDEX FORWARD SYSTEM
+# =====================================
+async def index_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    user_id = msg.from_user.id
+
+    if not is_admin(user_id):
+        await msg.reply_text("❌ Hanya admin yang boleh index.")
+        return
+
+    origin = msg.forward_origin
+
+    if not origin:
+        await msg.reply_text("❌ Ini bukan pesan forward channel.")
+        return
+
+    # Check if origin has chat attribute (for channel forwards)
+    origin_chat = getattr(origin, 'chat', None)
+    
+    if DATABASE_CHANNEL_ID and origin_chat and origin_chat.id != DATABASE_CHANNEL_ID:
+        await msg.reply_text("❌ Pesan bukan dari database channel.")
+        return
+
+    result = await parse_and_index_message(msg, context)
+
+    if result:
+        # result berisi info detail tentang apa yang diindex
+        await msg.reply_text(result, parse_mode='Markdown')
+    else:
+        await msg.reply_text("❌ *Format Caption Salah*\n\n━━━━━━━━━━━━━━━━━━━━\nPastikan format sesuai:\n\n📸 Thumbnail: `#ID JudulDrama`\n🎥 Episode: `#ID JudulDrama - Episode X`", parse_mode='Markdown')
+
+
+async def parse_and_index_message(message, context):
+    global drama_database
+
+    try:
+        caption = message.caption or ""
+
+        # VIDEO (EPISODE)
+        if message.video:
+            if not caption.startswith("#") or " - Episode " not in caption:
+                return False
+
+            parts = caption.split(" ", 1)
+            drama_id = parts[0][1:]
+
+            title_ep = parts[1].split(" - Episode ")
+            title = title_ep[0].strip()
+            ep = title_ep[1].strip()
+
+            # Check if drama exists
+            is_new_drama = drama_id not in drama_database
+            
+            if is_new_drama:
+                drama_database[drama_id] = {"title": title, "episodes": {}}
+
+            # Check if episode already exists
+            is_update = ep in drama_database[drama_id]["episodes"]
+            
+            drama_database[drama_id]["episodes"][ep] = {
+                "file_id": message.video.file_id
+            }
+
+            # Get video info
+            video = message.video
+            duration = f"{video.duration // 60}:{video.duration % 60:02d}" if video.duration else "N/A"
+            file_size = f"{video.file_size / (1024*1024):.2f} MB" if video.file_size else "N/A"
+            
+            total_eps = len(drama_database[drama_id]["episodes"])
+            
+            logger.info(f"Indexed: {drama_id} - {title} EP {ep}")
+            
+            # Detailed response
+            response = (
+                f"✅ *Berhasil Diindex!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📹 *Tipe:* Episode Video\n"
+                f"🎬 *Drama:* {title}\n"
+                f"🆔 *ID:* #{drama_id}\n"
+                f"📺 *Episode:* {ep}\n"
+                f"⏱ *Durasi:* {duration}\n"
+                f"💾 *Ukuran:* {file_size}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            
+            if is_new_drama:
+                response += f"🆕 Drama baru ditambahkan!\n"
+            elif is_update:
+                response += f"🔄 Episode diperbarui!\n"
+            else:
+                response += f"➕ Episode baru ditambahkan!\n"
+                
+            response += f"📊 Total episode sekarang: *{total_eps} EP*"
+            
+            return response
+
+        # PHOTO (THUMBNAIL)
+        if message.photo:
+            if not caption.startswith("#"):
+                return False
+
+            parts = caption.split(" ", 1)
+            drama_id = parts[0][1:]
+            title = parts[1].strip() if len(parts) > 1 else "Unknown"
+
+            # Check if drama exists
+            is_new_drama = drama_id not in drama_database
+            has_old_thumbnail = not is_new_drama and "thumbnail" in drama_database[drama_id]
+            
+            if is_new_drama:
+                drama_database[drama_id] = {"title": title, "episodes": {}}
+
+            drama_database[drama_id]["thumbnail"] = message.photo[-1].file_id
+            drama_database[drama_id]["title"] = title
+
+            # Get photo info
+            photo = message.photo[-1]
+            resolution = f"{photo.width}x{photo.height}"
+            file_size = f"{photo.file_size / 1024:.2f} KB" if photo.file_size else "N/A"
+            
+            total_eps = len(drama_database[drama_id].get("episodes", {}))
+            
+            logger.info(f"Indexed thumbnail: {drama_id} - {title}")
+            
+            # Detailed response
+            response = (
+                f"✅ *Berhasil Diindex!*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🖼 *Tipe:* Thumbnail Drama\n"
+                f"🎬 *Drama:* {title}\n"
+                f"🆔 *ID:* #{drama_id}\n"
+                f"📐 *Resolusi:* {resolution}\n"
+                f"💾 *Ukuran:* {file_size}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            
+            if is_new_drama:
+                response += f"🆕 Drama baru dibuat!\n"
+            elif has_old_thumbnail:
+                response += f"🔄 Thumbnail diperbarui!\n"
+            else:
+                response += f"➕ Thumbnail ditambahkan!\n"
+                
+            response += f"📊 Total episode: *{total_eps} EP*"
+            
+            return response
+
+        return False
+
+    except Exception as e:
+        logger.error(f"parse_and_index_message error: {e}")
+        return False
+
+
+# =====================================
+# PAGINATION HELPER
+# =====================================
+def paginate_items(items, page, items_per_page=10):
+    """Helper untuk pagination"""
+    start = page * items_per_page
+    end = start + items_per_page
+    return items[start:end], len(items)
+
+
 # =====================================
 # CALLBACK BUTTONS
 # =====================================
@@ -224,33 +313,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     await query.answer()
 
-    # MENU UTAMA
+    # ============================
+    # MENU UTAMA (BACK)
+    # ============================
     if query.data == "back":
         kb = build_start_keyboard(is_admin(user_id))
         welcome_text = (
-            "🎬 *DramaBox Bot*\n\n"
+            "🎬 *Bot DSeriesHub*\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Cari dan tonton drama favoritmu!\n\n"
+            f"📊 Total Drama: {len(drama_database)}\n"
+            f"🎥 Total Episode: {sum(len(d.get('episodes', {})) for d in drama_database.values())}\n\n"
             "Pilih menu:"
         )
         await safe_edit_or_reply(query, welcome_text, reply_markup=kb, parse_mode='Markdown')
         return
 
+    # ============================
     # SEARCH
+    # ============================
     if query.data == "search":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data="back")]])
         search_text = (
             "🔍 *Pencarian Drama*\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Ketik nama drama yang ingin kamu cari:\n\n"
-            "Contoh: _cinta_, _revenge_, _CEO_\n\n"
-            "Bot akan memberikan saran otomatis! ✨"
+            "Contoh: _Love Between Fairy_"
         )
         await safe_edit_or_reply(query, search_text, reply_markup=kb, parse_mode='Markdown')
         context.user_data["waiting"] = "search"
         return
 
+    # ============================
     # SUPPORT
+    # ============================
     if query.data == "support":
         support_text = (
             "💝 *Support Developer*\n\n"
@@ -280,7 +375,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit_or_reply(query, support_text + "\n\n_QRIS belum dikonfigurasi_", reply_markup=kb, parse_mode='Markdown')
         return
 
+    # ============================
     # ADMIN PANEL
+    # ============================
     if query.data == "admin_panel":
         if not is_admin(user_id):
             await safe_edit_or_reply(query, "❌ Hanya admin yang bisa mengakses panel ini.")
@@ -289,219 +386,289 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admin_text = (
             "⚙️ *Admin Panel*\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Bot menggunakan API DramaBox\n"
-            "Data drama diambil secara real-time\n\n"
-            "Status: ✅ Online"
+            f"📊 Total Drama: {len(drama_database)}\n"
+            f"🎥 Total Episode: {sum(len(d.get('episodes', {})) for d in drama_database.values())}\n\n"
+            "Pilih aksi:"
         )
         keyboard = [
-            [InlineKeyboardButton("📊 Test API", callback_data='test_api')],
+            [InlineKeyboardButton("➕ Upload Drama", callback_data='upload')],
+            [InlineKeyboardButton("🔄 Reload Database", callback_data='reload')],
+            [InlineKeyboardButton("📋 Statistik", callback_data='stats')],
             [InlineKeyboardButton("« Kembali", callback_data="back")]
         ]
         await safe_edit_or_reply(query, admin_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
-    # TEST API
-    if query.data == "test_api":
+    # ============================
+    # LIST DRAMA (dengan pagination)
+    # ============================
+    if query.data.startswith("list"):
+        page = 0
+        if "_" in query.data:
+            page = int(query.data.split("_")[1])
+        
+        if not drama_database:
+            await safe_edit_or_reply(
+                query, 
+                "📭 *Belum Ada Drama*\n\n━━━━━━━━━━━━━━━━━━━━\nDatabase masih kosong.", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data="back")]]),
+                parse_mode='Markdown'
+            )
+            return
+
+        # Sort drama by title
+        sorted_dramas = sorted(drama_database.items(), key=lambda x: x[1].get("title", ""))
+        page_items, total = paginate_items(sorted_dramas, page, items_per_page=8)
+        
+        keyboard = []
+        for did, info in page_items:
+            title = info.get("title", did)
+            ep_count = len(info.get("episodes", {}))
+            keyboard.append([InlineKeyboardButton(
+                f"🎬 {title} ({ep_count} EP)", 
+                callback_data=f"d_{did}"
+            )])
+
+        # Pagination buttons
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"list_{page-1}"))
+        if (page + 1) * 8 < total:
+            nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"list_{page+1}"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("« Kembali", callback_data="back")])
+        kb = InlineKeyboardMarkup(keyboard)
+
+        list_text = (
+            f"📺 *Daftar Drama* (Halaman {page + 1})\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Menampilkan {len(page_items)} dari {total} drama\n\n"
+            f"Pilih drama untuk melihat episode:"
+        )
+
+        await safe_edit_or_reply(query, list_text, reply_markup=kb, parse_mode='Markdown')
+        return
+
+    # ============================
+    # UPLOAD & RELOAD & STATS (ADMIN)
+    # ============================
+    if query.data == "upload":
         if not is_admin(user_id):
             await safe_edit_or_reply(query, "❌ Hanya admin")
             return
+
+        text = (
+            "📤 *Panduan Upload Drama*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*Format Thumbnail:*\n"
+            "`#ID JudulDrama`\n\n"
+            "*Format Episode:*\n"
+            "`#ID JudulDrama - Episode X`\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*Contoh:*\n"
+            "• Thumbnail: `#LBFD Love Between Fairy and Devil`\n"
+            "• Episode: `#LBFD Love Between Fairy and Devil - Episode 1`\n\n"
+            "Forward pesan dari channel ke bot ini untuk mengindex."
+        )
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Admin Panel", callback_data="admin_panel")]])
+        await safe_edit_or_reply(query, text, parse_mode="Markdown", reply_markup=kb)
+        return
+
+    if query.data == "reload":
+        if not is_admin(user_id):
+            await safe_edit_or_reply(query, "❌ Hanya admin")
+            return
+
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Admin Panel", callback_data="admin_panel")]])
+        await safe_edit_or_reply(
+            query, 
+            "🔄 *Reload Database*\n\n━━━━━━━━━━━━━━━━━━━━\nReload tidak diperlukan.\nGunakan sistem forward untuk indexing otomatis.", 
+            parse_mode='Markdown',
+            reply_markup=kb
+        )
+        return
+
+    if query.data == "stats":
+        if not is_admin(user_id):
+            await safe_edit_or_reply(query, "❌ Hanya admin")
+            return
+
+        total_eps = sum(len(d.get('episodes', {})) for d in drama_database.values())
+        dramas_with_thumb = sum(1 for d in drama_database.values() if 'thumbnail' in d)
         
-        test_result = api_search("love")
-        status = "✅ API Berfungsi" if test_result else "❌ API Error"
+        stats_text = (
+            "📋 *Statistik Database*\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"📺 Total Drama: {len(drama_database)}\n"
+            f"🎥 Total Episode: {total_eps}\n"
+            f"🖼 Drama dengan Thumbnail: {dramas_with_thumb}\n"
+            f"📊 Rata-rata EP/Drama: {total_eps // len(drama_database) if drama_database else 0}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "*Top 5 Drama (Episode Terbanyak):*\n"
+        )
+        
+        # Top 5 drama
+        top_dramas = sorted(
+            drama_database.items(), 
+            key=lambda x: len(x[1].get('episodes', {})), 
+            reverse=True
+        )[:5]
+        
+        for i, (did, info) in enumerate(top_dramas, 1):
+            stats_text += f"{i}. {info.get('title', did)} - {len(info.get('episodes', {}))} EP\n"
         
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Admin Panel", callback_data="admin_panel")]])
-        await safe_edit_or_reply(query, f"📊 *Test API*\n\n{status}", parse_mode='Markdown', reply_markup=kb)
+        await safe_edit_or_reply(query, stats_text, parse_mode='Markdown', reply_markup=kb)
         return
 
+    # ============================
     # PILIH DRAMA
+    # ============================
     if query.data.startswith("d_"):
-        drama_id = query.data[2:]
-        await show_episodes(query, drama_id)
+        did = query.data[2:]
+        await show_episodes(query, did)
         return
 
-    # EPISODE
+    # ============================
+    # EPISODE (dengan pagination)
+    # ============================
     if query.data.startswith("ep_"):
         parts = query.data.split("_")
         if len(parts) == 3:
-            _, drama_id, ep_num = parts
-            await send_episode(query, drama_id, ep_num, context)
+            _, did, ep = parts
+            await send_episode(query, did, ep, context)
         elif len(parts) == 4 and parts[1] == "page":
-            _, _, drama_id, page = parts
-            await show_episodes(query, drama_id, int(page))
+            # Format: ep_page_DID_PAGE
+            _, _, did, page = parts
+            await show_episodes(query, did, int(page))
         return
 
+
 # =====================================
-# SHOW EPISODES
+# SHOW EPISODES (dengan pagination)
 # =====================================
-async def show_episodes(query, drama_id, page=0):
-    await query.answer("⏳ Memuat episode...")
-    
-    # Get drama info dan episodes
-    drama_info = api_get_drama(drama_id)
-    episodes_data = api_get_episodes(drama_id)
-    
-    if not drama_info or not episodes_data:
+async def show_episodes(query, did, page=0):
+    if did not in drama_database:
         await safe_edit_or_reply(
-            query,
-            "❌ Gagal memuat data drama.\n\nCoba lagi nanti.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data="back")]])
+            query, 
+            "❌ Drama tidak ditemukan.", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Daftar Drama", callback_data="list")]])
         )
         return
+
+    info = drama_database[did]
+    eps = info.get("episodes", {})
     
-    # Parse data
-    data = drama_info.get('data', {})
-    title = data.get('title', 'Unknown')
-    description = data.get('description', '')
-    cover = data.get('cover', '')
+    # Sort episodes
+    sorted_eps = sorted(eps.keys(), key=lambda x: int(x) if x.isdigit() else x)
     
-    episodes = episodes_data.get('data', {}).get('chapters', [])
-    total_eps = len(episodes)
-    
-    # Pagination
-    page_eps, total = paginate_items(episodes, page, items_per_page=20)
-    
+    # Pagination (20 episode per halaman)
+    page_eps, total = paginate_items(sorted_eps, page, items_per_page=20)
+
     keyboard = []
     row = []
     
     # Build episode buttons (5 per row)
     for ep in page_eps:
-        ep_num = ep.get('order', 0)
-        ep_title = ep.get('title', f'EP {ep_num}')
-        row.append(InlineKeyboardButton(f"EP {ep_num}", callback_data=f"ep_{drama_id}_{ep_num}"))
+        row.append(InlineKeyboardButton(f"EP {ep}", callback_data=f"ep_{did}_{ep}"))
         if len(row) == 5:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    
+
     # Pagination buttons
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"ep_page_{drama_id}_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"ep_page_{did}_{page-1}"))
     nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{(total-1)//20 + 1}", callback_data="noop"))
     if (page + 1) * 20 < total:
-        nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"ep_page_{drama_id}_{page+1}"))
+        nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"ep_page_{did}_{page+1}"))
     
     keyboard.append(nav_buttons)
-    keyboard.append([InlineKeyboardButton("🔍 Cari Drama Lain", callback_data="search")])
-    keyboard.append([InlineKeyboardButton("« Menu Utama", callback_data="back")])
+    keyboard.append([InlineKeyboardButton("« Daftar Drama", callback_data="list")])
     kb = InlineKeyboardMarkup(keyboard)
-    
-    # Truncate description
-    desc_short = description[:200] + "..." if len(description) > 200 else description
-    
+
     text = (
-        f"🎬 *{title}*\n\n"
+        f"🎬 *{info.get('title', did)}*\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📺 Total Episode: {total_eps}\n"
+        f"📺 Total Episode: {len(eps)}\n"
         f"📄 Halaman: {page + 1}/{(total-1)//20 + 1}\n\n"
-        f"📖 _{desc_short}_\n\n"
         f"Pilih episode untuk ditonton:"
     )
     
-    if cover:
+    thumb = info.get("thumbnail")
+
+    if thumb:
         try:
             await query.message.reply_photo(
-                photo=cover,
-                caption=text,
-                reply_markup=kb,
+                photo=thumb, 
+                caption=text, 
+                reply_markup=kb, 
                 parse_mode="Markdown"
             )
-            try:
-                await query.message.delete()
-            except Exception:
-                pass
         except Exception as e:
             logger.error(f"reply_photo failed: {e}")
             await safe_edit_or_reply(query, text, reply_markup=kb, parse_mode="Markdown")
-    else:
-        await safe_edit_or_reply(query, text, reply_markup=kb, parse_mode="Markdown")
-
-# =====================================
-# SEND EPISODE
-# =====================================
-async def send_episode(query, drama_id, ep_num, context):
-    await query.answer("⏳ Memuat video...")
-    
-    # Get video URL
-    video_data = api_get_video(drama_id, int(ep_num))
-    
-    if not video_data:
-        await safe_edit_or_reply(
-            query,
-            "❌ Gagal memuat video.\n\nCoba lagi nanti.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data=f"d_{drama_id}")]])
-        )
-        return
-    
-    data = video_data.get('data', {})
-    title = data.get('title', 'Unknown')
-    video_url = data.get('video_url', '')
-    cover = data.get('cover', '')
-    
-    if not video_url:
-        await safe_edit_or_reply(
-            query,
-            "❌ Video tidak tersedia untuk episode ini.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data=f"d_{drama_id}")]])
-        )
-        return
-    
-    caption = (
-        f"🎬 *{title}*\n"
-        f"📺 Episode {ep_num}\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Selamat menonton! 🍿"
-    )
-    
-    # Navigation buttons
-    keyboard = [
-        [InlineKeyboardButton(f"▶️ Episode {int(ep_num)+1}", callback_data=f"ep_{drama_id}_{int(ep_num)+1}")],
-        [InlineKeyboardButton("📺 Daftar Episode", callback_data=f"d_{drama_id}")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="back")]
-    ]
-    kb = InlineKeyboardMarkup(keyboard)
-    
-    try:
-        # Kirim video langsung ke Telegram
-        await query.message.reply_video(
-            video=video_url,
-            caption=caption,
-            parse_mode='Markdown',
-            supports_streaming=True,
-            thumb=cover if cover else None
-        )
-        
-        # Kirim navigation buttons terpisah
-        await query.message.reply_text(
-            "━━━━━━━━━━━━━━━━━━━━\n*Navigasi:*",
-            reply_markup=kb,
-            parse_mode='Markdown'
-        )
-        
         try:
             await query.message.delete()
         except Exception:
             pass
-            
+    else:
+        await safe_edit_or_reply(query, text, reply_markup=kb, parse_mode="Markdown")
+
+
+# =====================================
+# SEND EPISODE
+# =====================================
+async def send_episode(query, did, ep, context):
+    info = drama_database.get(did)
+    if not info or "episodes" not in info or ep not in info["episodes"]:
+        await safe_edit_or_reply(
+            query, 
+            "❌ Episode tidak ditemukan.", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Kembali", callback_data=f"d_{did}")]])
+        )
+        return
+
+    episode = info["episodes"][ep]
+
+    caption = (
+        f"🎬 *{info.get('title',did)}*\n"
+        f"📺 Episode {ep}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Selamat menonton! 🍿"
+    )
+
+    try:
+        await query.message.reply_video(
+            episode["file_id"], 
+            caption=caption, 
+            parse_mode="Markdown"
+        )
     except Exception as e:
         logger.error(f"reply_video failed: {e}")
-        # Fallback ke link jika gagal kirim video
-        fallback_caption = (
-            f"🎬 *{title}*\n"
-            f"📺 Episode {ep_num}\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ Tidak dapat mengirim video langsung.\n\n"
-            f"🔗 Tonton di: [Klik di sini]({video_url})\n\n"
-            f"Selamat menonton! 🍿"
-        )
-        fallback_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"🔗 Tonton Episode {ep_num}", url=video_url)],
-            [InlineKeyboardButton(f"▶️ Episode {int(ep_num)+1}", callback_data=f"ep_{drama_id}_{int(ep_num)+1}")],
-            [InlineKeyboardButton("📺 Daftar Episode", callback_data=f"d_{drama_id}")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back")]
-        ])
-        await safe_edit_or_reply(query, fallback_caption, reply_markup=fallback_kb, parse_mode='Markdown')
+        await safe_edit_or_reply(query, "❌ Gagal mengirim video.")
+
+    # Navigation buttons
+    next_ep = str(int(ep) + 1) if ep.isdigit() else None
+    keyboard = []
+    
+    if next_ep and next_ep in info["episodes"]:
+        keyboard.append([InlineKeyboardButton(f"▶️ Episode {next_ep}", callback_data=f"ep_{did}_{next_ep}")])
+    
+    keyboard.append([InlineKeyboardButton("📺 Daftar Episode", callback_data=f"d_{did}")])
+    keyboard.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="back")])
+    kb = InlineKeyboardMarkup(keyboard)
+
+    try:
+        await query.message.reply_text("━━━━━━━━━━━━━━━━━━━━\n*Navigasi:*", reply_markup=kb, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"reply_text navigation failed: {e}")
+
 
 # =====================================
 # USER MESSAGE HANDLER
@@ -509,129 +676,70 @@ async def send_episode(query, drama_id, ep_num, context):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     
-    if not msg or not msg.text:
+    # Check if message exists
+    if not msg:
         return
-    
+
+    # FORWARD → INDEX
+    if msg.forward_origin:
+        await index_message(update, context)
+        return
+
     # SEARCH MODE
     if context.user_data.get("waiting") == "search":
-        keyword = msg.text.strip()
-        
-        if not keyword:
-            await msg.reply_text("❌ Masukkan kata kunci pencarian.")
+        text = (msg.text or "").strip()
+        if not text:
+            await msg.reply_text("❌ Masukkan nama drama.")
             return
-        
-        try:
-            # Search using API
-            search_results = api_search(keyword)
-            
-            # Debug log
-            logger.info(f"API Response: {search_results}")
-            
-            if not search_results:
-                await msg.reply_text(
-                    f"❌ *Gagal Terhubung ke Server*\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Tidak dapat mengakses API.\n\n"
-                    f"Coba lagi nanti!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
-                        [InlineKeyboardButton("« Kembali", callback_data="back")]
-                    ]),
-                    parse_mode='Markdown'
-                )
-                context.user_data["waiting"] = None
-                return
-            
-            # Parse results - handle different response structures
-            results = []
-            if isinstance(search_results, dict):
-                # Try different possible keys
-                data = search_results.get('data', search_results.get('results', search_results.get('items', [])))
-                
-                # If data is a dict, try to get list from it
-                if isinstance(data, dict):
-                    data = data.get('list', data.get('items', data.get('dramas', [])))
-                
-                if isinstance(data, list):
-                    results = data[:10]  # Limit to 10
-            elif isinstance(search_results, list):
-                results = search_results[:10]
-            
-            if not results:
-                await msg.reply_text(
-                    f"❌ *Tidak Ditemukan*\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Drama dengan kata kunci *\"{keyword}\"* tidak ditemukan.\n\n"
-                    f"Coba kata kunci lain!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
-                        [InlineKeyboardButton("« Kembali", callback_data="back")]
-                    ]),
-                    parse_mode='Markdown'
-                )
-                context.user_data["waiting"] = None
-                return
-            
-            # Build keyboard from results
+
+        query_lower = text.lower()
+        results = [
+            (did, info["title"])
+            for did, info in drama_database.items()
+            if query_lower in info.get("title", "").lower()
+        ]
+
+        if not results:
+            search_text = (
+                "❌ *Tidak Ditemukan*\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Drama dengan kata kunci *\"{text}\"* tidak ditemukan.\n\n"
+                f"Coba kata kunci lain atau lihat daftar lengkap."
+            )
+            await msg.reply_text(
+                search_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📺 Lihat Semua Drama", callback_data="list")],
+                    [InlineKeyboardButton("« Kembali", callback_data="back")]
+                ]),
+                parse_mode='Markdown'
+            )
+        else:
             keyboard = []
-            for item in results:
-                if isinstance(item, dict):
-                    drama_id = item.get('id', item.get('drama_id', item.get('album_id', '')))
-                    title = item.get('title', item.get('name', 'Unknown'))
-                    
-                    if drama_id:
-                        keyboard.append([InlineKeyboardButton(
-                            f"🎬 {title}",
-                            callback_data=f"d_{drama_id}"
-                        )])
-            
-            if not keyboard:
-                await msg.reply_text(
-                    f"❌ *Tidak Ada Hasil Valid*\n\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Tidak dapat memproses hasil pencarian.\n\n"
-                    f"Coba kata kunci lain!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
-                        [InlineKeyboardButton("« Kembali", callback_data="back")]
-                    ]),
-                    parse_mode='Markdown'
-                )
-                context.user_data["waiting"] = None
-                return
-            
-            keyboard.append([InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")])
+            for did, title in results:
+                ep_count = len(drama_database[did].get("episodes", {}))
+                keyboard.append([InlineKeyboardButton(
+                    f"🎬 {title} ({ep_count} EP)", 
+                    callback_data=f"d_{did}"
+                )])
             keyboard.append([InlineKeyboardButton("« Kembali", callback_data="back")])
             
             result_text = (
                 f"🔍 *Hasil Pencarian*\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Ditemukan {len(keyboard)-2} drama untuk *\"{keyword}\"*\n\n"
+                f"Ditemukan {len(results)} drama dengan kata kunci *\"{text}\"*:\n\n"
                 f"Pilih drama:"
             )
             
             await msg.reply_text(
-                result_text,
+                result_text, 
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown'
             )
-            
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            await msg.reply_text(
-                f"❌ *Terjadi Kesalahan*\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Error: {str(e)}\n\n"
-                f"Coba lagi nanti!",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔍 Cari Lagi", callback_data="search")],
-                    [InlineKeyboardButton("« Kembali", callback_data="back")]
-                ]),
-                parse_mode='Markdown'
-            )
-        
+
         context.user_data["waiting"] = None
         return
+
 
 # =====================================
 # SET BOT COMMANDS
@@ -644,19 +752,20 @@ async def post_init(application: Application):
     await application.bot.set_my_commands(commands)
     logger.info("Bot commands set successfully")
 
+
 # =====================================
 # MAIN
 # =====================================
 def main():
     Thread(target=run_flask, daemon=True).start()
-    
+
     app_bot = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    
+
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CallbackQueryHandler(button_handler))
-    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    logger.info("Bot berjalan dengan API DramaBox...")
+    app_bot.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+
+    logger.info("Bot berjalan...")
     app_bot.run_polling()
 
 if __name__ == "__main__":
