@@ -54,7 +54,7 @@ def is_admin(user_id: int) -> bool:
 # =====================================
 # API DRAMABOX
 # =====================================
-API_BASE = "https://sapi.dramabox.be/api"
+API_BASE = "https://sapi.dramabox.be"
 DEFAULT_LANG = "in"
 
 def api_search(keyword: str, lang: str = DEFAULT_LANG):
